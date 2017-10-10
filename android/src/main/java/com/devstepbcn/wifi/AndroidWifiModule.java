@@ -12,6 +12,7 @@ import com.facebook.react.modules.core.DeviceEventManagerModule;
 import com.facebook.react.shell.MainReactPackage;
 import com.facebook.soloader.SoLoader;
 
+import android.content.ContentResolver;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiManager;
 import android.net.wifi.WifiConfiguration;
@@ -24,13 +25,21 @@ import android.content.IntentFilter;
 import android.content.BroadcastReceiver;
 import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
+import android.provider.Settings.Secure;
+import android.util.Log;
 import android.widget.Toast;
 import java.util.List;
+import java.lang.reflect.Field;
 import java.lang.Thread;
 
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
+import static android.os.Build.VERSION.SDK_INT;
+import static android.os.Build.VERSION_CODES.ICE_CREAM_SANDWICH_MR1;
+import static android.os.Build.VERSION_CODES.JELLY_BEAN_MR1;
 
 public class AndroidWifiModule extends ReactContextBaseJavaModule {
 
@@ -213,6 +222,71 @@ public class AndroidWifiModule extends ReactContextBaseJavaModule {
 	public void disconnect() {
 		wifi.disconnect();
 	}
+
+  // Checks whether the "Avoid poor networks" setting (named "Auto network switch" on
+  // some Samsung devices) is enabled, which can in some instances interfere with Wi-Fi.
+  @ReactMethod
+  public void isWatchdogEnabled(final Callback callback) {
+    Context context = getReactApplicationContext();
+    boolean result = isWatchdogEnabled(context);
+    callback.invoke(result);
+  }
+
+   private static boolean isWatchdogEnabled(Context context) {
+     final int SETTING_UNKNOWN = -1;
+     final int SETTING_ENABLED = 1;
+     final String AVOID_POOR = "wifi_watchdog_poor_network_test_enabled";
+     final String WATCHDOG_CLASS = "android.net.wifi.WifiWatchdogStateMachine";
+     final String DEFAULT_ENABLED = "DEFAULT_POOR_NETWORK_AVOIDANCE_ENABLED";
+     final ContentResolver contentResolver = context.getContentResolver();
+
+     int result;
+
+     if (SDK_INT == ICE_CREAM_SANDWICH_MR1 ) {
+       result = Settings.Secure.getInt(contentResolver, AVOID_POOR, SETTING_UNKNOWN);
+     } else if (SDK_INT >= JELLY_BEAN_MR1) {
+       //Setting was moved from Secure to Global as of JB MR1
+       result = Settings.Global.getInt(contentResolver, AVOID_POOR, SETTING_UNKNOWN);
+     } else {
+       //Poor network avoidance not introduced until ICS MR1
+       //See android.provider.Settings.java
+       return false;
+     }
+
+     //Exit here if the setting value is known
+     if (result != SETTING_UNKNOWN) {
+       return (result == SETTING_ENABLED);
+     }
+
+     //Setting does not exist in database, so it has never been changed.
+     //It will be initialized to the default value.
+     if (SDK_INT >= JELLY_BEAN_MR1) {
+       //As of JB MR1, a constant was added to WifiWatchdogStateMachine to determine
+       //the default behavior of the Avoid Poor Networks setting.
+       try {
+         //In the case of any failures here, take the safe route and assume the
+         //setting is disabled to avoid disrupting the user with false information
+         Class wifiWatchdog = Class.forName(WATCHDOG_CLASS);
+         Field defValue = wifiWatchdog.getField(DEFAULT_ENABLED);
+         if (!defValue.isAccessible()) {
+           defValue.setAccessible(true);
+         }
+         return defValue.getBoolean(null);
+       } catch (IllegalAccessException ex) {
+         return false;
+       } catch (NoSuchFieldException ex) {
+         return false;
+       } catch (ClassNotFoundException ex) {
+         return false;
+       } catch (IllegalArgumentException ex) {
+         return false;
+       }
+     } else {
+       //Prior to JB MR1, the default for the Avoid Poor Networks setting was
+       //to enable it unless explicitly disabled
+       return true;
+     }
+    }
 
 	//This method will return current ssid
 	@ReactMethod
